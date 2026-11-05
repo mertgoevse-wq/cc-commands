@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# cc-agent — Claude Code über AgentRouter (agentrouter.org, Gratis-Guthaben) starten.
+# AgentRouter bietet eine Anthropic-kompatible Route; Modelle sind dynamisch.
+# Live-Modelliste: https://agentrouter.org/console/personal
+#
+#   cc-agent               Modellauswahl (Doku-Fallback, s. u.) + starten
+#   cc-agent list          Modellliste anzeigen (Live-Fetch; Fallback: bekannte Modelle)
+#   cc-agent <modell> [claude-args...]
+
+set -u
+BASE="https://agentrouter.org"
+KEY_FILE="${AGENTROUTER_KEY_FILE:-$HOME/.cc-providers/agentrouter.key}"
+
+[ -r "$KEY_FILE" ] || { echo "Fehler: Kein AgentRouter-Key in $KEY_FILE" >&2; exit 1; }
+KEY="$(tr -d '\r\n' < "$KEY_FILE")"
+
+# Bekannte Anthropic-Route-Modelle (Dokumentation/Quickstart, dynamisch atualisiert)
+DECLARED_MODELS=(
+    "claude-opus-4-8"
+    "claude-opus-4-7"
+    "claude-opus-4-6"
+    "claude-opus-5"
+    "claude-sonnet-4-5-20250929"
+    "claude-haiku-4-5-20251001"
+)
+
+start_claude() {
+    local model="$1"; shift
+    export ANTHROPIC_BASE_URL="$BASE"
+    export ANTHROPIC_AUTH_TOKEN="$KEY"
+    export ANTHROPIC_API_KEY="$KEY"
+    unset ANTHROPIC_MODEL
+    echo "→ Starte Claude Code via AgentRouter — Modell: $model"
+    exec claude --model "$model" "$@"
+}
+
+case "${1:-}" in
+    list)
+        echo "Versuche Live-Fetch der Modellliste (/v1/models) ..."
+        LIVE=$(curl -sS --max-time 20 "$BASE/v1/models" -H "Authorization: Bearer $KEY" | node "$HOME/bin/cc-json-ids.js" 2>/dev/null)
+        if [ -n "$LIVE" ]; then
+            echo "$LIVE" | grep -i claude | nl -ba
+            echo "(Live-Anthropic-Modelle; die vollständige Liste liegt in der AgentRouter-Konsole)"
+        else
+            echo "Live-Fetch blockiert (AgentRouter verlangt den echten Claude-Code-Client)."
+            echo "Verfügbare Modelle laut Doku / Konsole (https://agentrouter.org/console/personal):"
+            printf '  %s\n' "${DECLARED_MODELS[@]}"
+        fi
+        ;;
+    help|-h|--help)
+        cat <<'USAGE'
+cc-agent — Claude Code via AgentRouter (Anthropic-kompatibel)
+
+  cc-agent              Modelle aus der Konsoe-Liste wählen + starten
+  cc-agent list         Modellliste anzeigen
+  cc-agent <modell>     Direkt starten (z. B. cc-agent claude-opus-4-8)
+  cc-agent <modell> args  Claude-Argumente durchreichen
+
+Key: ~/.cc-providers/agentrouter.key  |  Basis: https://agentrouter.org (ohne /v1)
+USAGE
+        ;;
+    "")
+        local_count=${#DECLARED_MODELS[@]}
+        i=1
+        for m in "${DECLARED_MODELS[@]}"; do printf '%-4d %s\n' "$i" "$m"; i=$((i+1)); done
+        echo "(Feste Doku-Liste; Live-Liste in der Konsole: agentrouter.org/console/personal)"
+        printf 'Modell wählen (Nummer oder Name): '
+        read -r CHOICE
+        [ -n "$CHOICE" ] || { echo "Abgebrochen." >&2; exit 1; }
+        if case "$CHOICE" in (*[!0-9]*|'') false;; esac && [ "$CHOICE" -ge 1 ] && [ "$CHOICE" -le "$local_count" ]; then
+            MODEL="${DECLARED_MODELS[$((CHOICE - 1))]}"
+        else
+            MODEL="$CHOICE"
+        fi
+        start_claude "$MODEL"
+        ;;
+    *)
+        start_claude "$@"
+        ;;
+esac

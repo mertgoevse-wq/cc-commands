@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# cc-gemini — Coding-Agent über die Google-Antigravity-CLI (agy) mit deinem
+# Google-AI-Pro-Konto (OAuth: beim ersten Start öffnet agy die Google-Anmeldung).
+#
+# Warum nicht Claude-Code-Binärdatei routen? Der offizielle Weg für Free-/Pro-
+# Accounts ist seit Juni 2026 die Antigravity-CLI. Das Umlenken des Claude-Code-
+# Clients auf Gemini-OAuth (Proxy-Tricks) verstößt laut Google-ToS gegen die
+# Nutzungsbedingungen und kann zur Kontosperrung führen. agy ist trotzdem ein
+# Claude-Code-kompatibles Agentic-Coding-CLI (--dangerously-skip-permissions etc.).
+#
+#   cc-gemini            alle AGY-Modelle listen + auswählen + starten
+#   cc-gemini list       nur die Modellliste anzeigen
+#   cc-gemini <modell> [agy-args...]
+#   cc-gemini help
+
+set -u
+command -v agy >/dev/null 2>&1 || { echo "Fehler: agy (Antigravity CLI) nicht gefunden." >&2; exit 1; }
+
+start_agy() {
+    local model="$1"; shift
+    echo "→ Starte Antigravity CLI ( dein Google-AI-Pro-Abo) — Modell: $model"
+    exec agy --model "$model" "$@"
+}
+
+case "${1:-}" in
+    list)
+        echo "→ Verfügbare AGY-Modelle (Google AI Pro):"
+        agy models 2>/dev/null || { echo "Fehler: agy models fehlgeschlagen (ggf. Login nötig: einfach agy starten)." >&2; exit 1; }
+        ;;
+    help|-h|--help)
+        cat <<'USAGE'
+cc-gemini — Coding-Cli über Google Antigravity (agy) mit deinem Abo
+
+  cc-gemini        Modelle listen + auswählen + agy starten
+  cc-gemini list   nur die Modellliste
+  cc-gemini <modell>   direkt starten (z. B. cc-gemini gemini-4-argon-high)
+  cc-gemini <modell> args  agy-Argumente durchreichen (z. B. -p "Frage")
+
+Erste Anmeldung: einfach cc-gemini (oder agy) starten — die Google-
+Anmeldung öffnet sich im Browser; danach ist das Abo verknüpft.
+USAGE
+        ;;
+    "")
+        mapfile -t AGY_MODELS < <(agy models 2>/dev/null | awk -F"\t" '{print $1}')
+        if [ "${#AGY_MODELS[@]}" -eq 0 ]; then
+            echo "Fehler: keine Modelle erhalten (Login nötig?). Starte zuerst: agy" >&2
+            exit 1
+        fi
+        agy models 2>/dev/null | nl -ba
+        printf 'Modell wählen (Nummer oder Name): '
+        read -r CHOICE
+        [ -n "$CHOICE" ] || { echo "Abgebrochen." >&2; exit 1; }
+        if case "$CHOICE" in (*[!0-9]*|'') false;; esac && [ "$CHOICE" -ge 1 ] && [ "$CHOICE" -le "${#AGY_MODELS[@]}" ]; then
+            MODEL="${AGY_MODELS[$((CHOICE - 1))]}"
+        else
+            MODEL="$CHOICE"
+        fi
+        start_agy "$MODEL"
+        ;;
+    *)
+        start_agy "$@"
+        ;;
+esac

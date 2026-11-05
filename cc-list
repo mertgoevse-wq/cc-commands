@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# cc-list — Übersicht aller cc-* Befehle mit Statusspalte
+# (aufgerufen via `cc list` oder `cc-list`).
+set -u
+
+CPP="$HOME/.cc-providers"
+Y="✓"; N="✗"; NA="–"
+
+key_ok() { [ -s "$1" ] && [ -r "$1" ]; }
+have()   { command -v "$1" >/dev/null 2>&1; }
+codex_ok() { have codex || [ -x "$HOME/AppData/Local/Programs/OpenAI/Codex/bin/codex" ]; }
+ccr_ok() { curl -sS -o /dev/null --max-time 2 http://127.0.0.1:3456 2>/dev/null; }
+
+mark()  { if eval "$1"; then printf '%s' "$Y"; else printf '%s' "$N"; fi; }
+
+CCRS="$N"; ccr_ok && CCRS="$Y"
+
+CCRSDESC="Claude Code über NVIDIA NIM (Bridge auf Port 3456: $CCRS)"
+
+printf '%-15s %-4s %s\n' "BEFEHL" "OK" "BESCHREIBUNG"
+printf '%-15s %-4s %s\n' "------" "---" "-------------"
+
+row() {
+    printf '%-15s %-4s %s\n' "$1" "$2" "$3"
+}
+
+COD="$(mark codex_ok)"
+PS="$( mark 'command -v powershell.exe >/dev/null 2>&1')"
+
+row "cc"            "$(mark 'have claude')" "Claude Code (Standard, eigenes Claude-Konto)"
+row "cc-agent"      "$(mark "key_ok '$CPP/agentrouter.key'")" "Claude Code via AgentRouter (agentrouter.org, Gratis-Guthaben)"
+row "cc-blues"      "$(mark "key_ok \"\$HOME/.bluesminds/api_key\"")" "Claude Code via BluesMinds-Gateway (api.bluesminds.com)"
+row "cc-kilo"       "$(mark "key_ok '$CPP/kilo.key'")" "Claude Code via Kilo Gateway (kilo-auto/free + mehr)"
+row "cc-nim"        "$(mark "key_ok '$CPP/nim.key'")" "$CCRSDESC"
+row "cc-opencode"   "$(mark "key_ok '$CPP/kilo.key'")" "Claude Code via Kilo Auto-Free-Router (kilo-auto/free)"
+row "cc-gemini"     "$(mark 'have agy')" "Gemini-Modelle über Antigravity CLI (agy, Google-AI-Pro-Abo)"
+row "codex"         "$COD" "OpenAI Codex CLI"
+row "codex-omni"    "$COD" "Codex über OmniRoute-Router"
+row "free-astra"    "$PS" "Adapter-Server für Codex CLI starten"
+row "cc-free-astra" "$PS" "Claude Code über den free-astra-Adapter"
+
+echo
+printf '%s %s   %s %s   %s %s\n' "$Y" "= Key/Dienst vorhanden bzw. läuft" "$N" "= fehlt/gestoppt" "$NA" "= nicht relevant"
+if [ "$CCRS" = "$N" ]; then
+    echo "! ccr-Router (Port 3456) läuft gerade NICHT — der ist Voraussetzung für cc-nim."
+fi
+echo
+echo "→ Die meisten cc-Befehle verstehen:"
+echo "    <befehl>              Modelle auflisten + eines auswählen + starten"
+echo "    <befehl> list         nur die Modellliste"
+echo "    <befehl> <modell>     direkt starten"
+echo "    <befehl> help         Nutzungshilfe"

@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+REALCODEX="/c/Users/Win11 Pro/AppData/Local/Programs/OpenAI/Codex/bin/codex"
+SUBCMDS="exec review login logout mcp plugin app-server remote-control app completion update doctor sandbox debug apply resume queue archive delete fork cloud exec-server features help"
+if [ "$1" = "-omni" ]; then
+  shift
+  MODEL="${1:-auto}"
+  # if first remaining is a subcommand, no model given
+  case " $SUBCMDS " in *" $MODEL "*) MODEL="auto";; esac
+  if [ "$MODEL" != "auto" ]; then shift; fi
+  [ "$MODEL" = "auto" ] && MODEL="omniroute/auto"
+  PROVIDER="omniroute"
+  if [ -n "$1" ] && ! echo " $SUBCMDS " | grep -q " $1 "; then
+    case "$1" in -*) ;; *) PROVIDER="$1"; shift;; esac
+  fi
+  # Key: env OMNIROUTE_API_KEY geht vor; sonst aus Key-Datei (niemals im Skript speichern)
+  KEYFILE="${OMNIROUTE_KEY_FILE:-$HOME/.cc-providers/omniroute.key}"
+  if [ -z "${OMNIROUTE_API_KEY:-}" ] && [ -r "$KEYFILE" ]; then
+    OMNIROUTE_API_KEY="$(tr -d '[:space:]' < "$KEYFILE")"
+  fi
+  if [ -z "${OMNIROUTE_API_KEY:-}" ]; then
+    echo "Kein OmniRoute-Key. Setze \$OMNIROUTE_API_KEY oder lege $KEYFILE an." >&2
+    exit 1
+  fi
+  export OMNIROUTE_API_KEY
+  exec "$REALCODEX" --profile codex-omni \
+    -c "model=\"$MODEL\"" \
+    -c "model_provider=\"$PROVIDER\"" \
+    "$@"
+fi
+exec "$REALCODEX" "$@"

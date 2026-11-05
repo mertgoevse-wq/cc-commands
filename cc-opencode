@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# cc-opencode — "OpenCode"-Router-Bundle: Claude Code über den Autorouter.
+# Standardmodell: kilo-auto/free (Kilo Auto Free) — routet automatisch auf die
+# besten gerade verfügbaren Gratis-Modelle (OpenRouter-Backed).
+#
+#   cc-opencode            oder cc-opencode free -> Claude Code via kilo-auto/free
+#   cc-opencode <modell>   Claude Code via Kilo Gateway mit beliebigem Modell
+#   cc-opencode list [free|all]
+#   cc-opencode tui [args] Startet stattdessen die opencode-CLI selbst
+#   cc-opencode login      Kilo-Key einspielen (Google-Anmeldung)
+#   cc-opencode help
+
+set -u
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+case "${1:-}" in
+    tui)
+        shift
+        echo "→ Starte die opencode-CLI ..."
+        exec opencode "$@"
+        ;;
+    login)
+        exec "$SELF_DIR/cc-kilo" login
+        ;;
+    list)
+        shift
+        exec "$SELF_DIR/cc-kilo" list "${1:-free}"
+        ;;
+    help|-h|--help)
+        cat <<'USAGE'
+cc-opencode — Claude Code über den Autorouter (kilo-auto/free)
+
+  cc-opencode | cc-opencode free   Claude Code via Auto Free (Autorouter, gratis)
+  cc-opencode <modell>             Claude Code via Kilo Gateway (andere Modelle)
+  cc-opencode list [free|all]      Modellliste
+  cc-opencode tui [args]           die opencode-CLI selbst starten
+  cc-opencode login                Kilo-Key einspielen (Google-Anmeldung)
+
+Zusatz: OpenCode Zen ist ein separate Bezahl-Gateway (opencode.ai/zen) und
+wird hier NICHT benutzt, weil es kein Gratis-Autorouter-Modell anbietet.
+USAGE
+        ;;
+    free|"")
+        exec "$SELF_DIR/cc-kilo" kilo-auto/free
+        ;;
+    *)
+        exec "$SELF_DIR/cc-kilo" "$@"
+        ;;
+esac

@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# cc-kilo — Claude Code über den Kilo Gateway (kilo.ai) starten.
+# Der Kilo Gateway bietet eine Anthropic-kompatible Route; Anmeldung per
+# Google-Konto (Browser-OAuth) unter app.kilo.ai, danach API-Key aus dem Profil.
+#
+#   cc-kilo login          Browser öffnen (Google-Anmeldung) + Key speichern
+#   cc-kilo list [all|free]   Modelle auflisten (default: nur gratis)
+#   cc-kilo                Modelle listen + auswählen + starten
+#   cc-kilo <modell> [claude-args...]
+#   cc-kilo help
+
+set -u
+BASE="https://ai-gateway.kilo.ai/api"
+KEY_FILE="${KILO_KEY_FILE:-$HOME/.cc-providers/kilo.key}"
+MODELS_URL="https://ai-gateway.kilo.ai/api/v1/models"
+
+cmd_login() {
+    echo "→ Öffne https://app.kilo.ai (Anmeldung mit Google-Konto)."
+    cmd //c start "" "https://app.kilo.ai" 2>/dev/null || { echo "Öffne selbst: https://app.kilo.ai"; }
+    sleep 3
+    printf 'Nach dem Login im Profil den Gateway-API-Key einfügen (Profile → API Key): '
+    read -r k
+    k="$(printf '%s' "$k" | tr -d '\r\n ')"
+    [ -n "$k" ] || { echo "Abgebrochen." >&2; exit 1; }
+    mkdir -p "$HOME/.cc-providers"
+    printf '%s' "$k" > "$KILO_KEY_FILE"
+    chmod 600 "$KILO_KEY_FILE"
+    echo "→ Key gespeichert in $KILO_KEY_FILE"
+}
+
+print_models() {
+    local scope="${1:-free}"
+    local url="$MODELS_URL"
+    case "$scope" in
+        free)   url="$MODELS_URL?isFree=true" ;;
+        all|*)  url="$MODELS_URL" ;;
+    esac
+    curl -sS --max-time 30 "$url" | node -e '
+let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{
+ try{
+  const j=JSON.parse(s); const arr=j.data||[];
+  for(const m of arr){
+    const free=(m.isFree||m.id.endsWith(":free")||String(m.id).startsWith("kilo-auto/free"))?"[FREE]":"      ";
+    console.log((free+" "+m.id).trim());
+  }
+ }catch(e){console.error("Kein gültiges Modell-JSON");process.exit(3)}
+});'
+}
+
+start_claude() {
+    local model="$1"; shift
+    if [ ! -r "$KILO_KEY_FILE" ]; then
+        echo "Kein Kilo-Key gefunden. Erst: cc-kilo login" >&2
+        exit 1
+    fi
+    local KEY
+    KEY="$(tr -d '\r\n' < "$KILO_KEY_FILE")"
+    export ANTHROPIC_BASE_URL="$BASE"
+    export ANTHROPIC_AUTH_TOKEN="$KEY"
+    export ANTHROPIC_API_KEY="$KEY"
+    unset ANTHROPIC_MODEL
+    echo "→ Starte Claude Code via Kilo Gateway — Modell: $model"
+    exec claude --model "$model" "$@"
+}
+
+case "${1:-}" in
+    login)  cmd_login ;;
+    list)
+        shift
+        print_models "${1:-free}"
+        ;;
+    help|-h|--help)
+        cat <<'USAGE'
+cc-kilo — Claude Code via Kilo Gateway (gratis via kilo-auto/free)
+
+  cc-kilo login             Google-OAuth-Anmeldung im Browser + Key speichern
+  cc-kilo list [free|all]   Modellliste (default: gratis Modelle)
+  cc-kilo                   Modelle auflisten + auswählen + starten
+  cc-kilo <modell>          Direkt starten (z. B. cc-kilo kilo-auto/free)
+
+Key: ~/.cc-providers/kilo.key (nach cc-kilo login) | Route: Anthropic-kompatibel
+USAGE
+        ;;
+    "")
+        print_models all 2>/dev/null | nl -ba | head -80
+        echo "(Top-Auswahl – vollständige Liste: cc-kilo list all)"
+        printf 'Modell wählen (Nummer von oben oder Name): '
+        read -r CHOICE
+        [ -n "$CHOICE" ] || { echo "Abgebrochen." >&2; exit 1; }
+        # Nummer -> Name aus derselben Reihenfolge herleiten
+        if case "$CHOICE" in (*[!0-9]*|'') false;; esac; then
+            MODEL=$(print_models all | sed -n "${CHOICE}p" | awk '{print $NF}')
+        else
+            MODEL="$CHOICE"
+        fi
+        start_claude "$MODEL"
+        ;;
+    *)
+        start_claude "$@"
+        ;;
+esac

@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+# cc-nim — Claude Code über NVIDIA NIM (build.nvidia.com, gratis Trial-Tier) starten.
+# NIM ist OpenAI-Format; die Anthropic->OpenAI-Übersetzung übernimmt claude-code-router
+# (ccr) als lokale Bridge auf http://127.0.0.1:3456.
+#
+#   cc-nim                 Modelle listen + auswählen + starten
+#   cc-nim list [muster]   nur listen (Optional: grep-Muster, z. B. 'llama|qwen|kimi')
+#   cc-nim <modell> [claude-args...]
+#   cc-nim help
+
+set -u
+BASE="https://integrate.api.nvidia.com/v1"
+KEY_FILE="${NIM_KEY_FILE:-$HOME/.cc-providers/nim.key}"
+
+[ -r "$KEY_FILE" ] || { echo "Fehler: Kein NVIDIA-Key in $KEY_FILE" >&2; exit 1; }
+KEY="$(tr -d '\r\n' < "$KEY_FILE")"
+
+fetch_ids() {
+    curl -sS --max-time 40 "$BASE/models" -H "Authorization: Bearer $KEY" \
+        | node "$HOME/bin/cc-json-ids.js"
+}
+
+ensure_gateway() {
+    if curl -sS --max-time 2 -o /dev/null "http://127.0.0.1:3456/" 2>/dev/null; then
+        return 0
+    fi
+    echo "→ Starte lokale ccr-Bridge (Anthropic->OpenAI) auf Port 3456 ..." >&2
+    ccr start >/dev/null 2>&1 &
+    local i
+    for i in $(seq 1 20); do
+        if curl -sS --max-time 2 -o /dev/null "http://127.0.0.1:3456/" 2>/dev/null; then
+            return 0
+        fi
+        sleep 1
+    done
+    echo "Fehler: ccr-Gateway startet nicht (ccr start manuell prüfen)." >&2
+    return 1
+}
+
+start_claude() {
+    local model="$1"; shift
+    node "$HOME/bin/cc-config.js" upsert nvidia-nim "$BASE/chat/completions" "$KEY" "$model" >/dev/null \
+        || { echo "Fehler beim Schreiben der ccr-Config." >&2; exit 1; }
+    node "$HOME/bin/cc-config.js" default "nvidia-nim,$model" >/dev/null
+    ensure_gateway || exit 1
+    export ANTHROPIC_BASE_URL="http://127.0.0.1:3456"
+    export ANTHROPIC_AUTH_TOKEN="sk-ccr-local"
+    export ANTHROPIC_API_KEY="sk-ccr-local"
+    unset ANTHROPIC_MODEL
+    echo "→ Starte Claude Code via NVIDIA NIM (Gratis-Tier, ccr-Bridge) — Modell: $model"
+    exec claude --model "nvidia-nim,$model" "$@"
+}
+
+print_list() {
+    mapfile -t MODELS
+    if [ "${#MODELS[@]}" -eq 0 ]; then
+        echo "Keine Modelle von NIM erhalten — Key prüfen." >&2
+        return 1
+    fi
+    local i=1
+    for m in "${MODELS[@]}"; do
+        printf '%-4d %s\n' "$i" "$m"
+        i=$((i + 1))
+    done
+    echo "(${#MODELS[@]} NIM-Modelle; alle im Gratis-Trial-Tier; tool-calling-Eignung beachten)"
+}
+
+pick_and_start() {
+    mapfile -t MODELS < <(fetch_ids)
+    if [ "${#MODELS[@]}" -eq 0 ]; then
+        echo "Keine Modelle von NIM erhalten — Key prüfen." >&2
+        exit 1
+    fi
+    local i=1
+    for m in "${MODELS[@]}"; do
+        printf '%-4d %s\n' "$i" "$m"
+        i=$((i + 1))
+    done
+    echo "(${#MODELS[@]} NIM-Modelle; alle im Gratis-Trial-Tier)"
+    printf 'Modell wählen (Nummer oder Name): '
+    read -r CHOICE
+    [ -n "$CHOICE" ] || { echo "Abgebrochen." >&2; exit 1; }
+    if case "$CHOICE" in (*[!0-9]*|'') false;; esac && [ "$CHOICE" -ge 1 ] && [ "$CHOICE" -le "${#MODELS[@]}" ]; then
+        MODEL="${MODELS[$((CHOICE - 1))]}"
+    else
+        MODEL="$CHOICE"
+    fi
+    start_claude "$MODEL" "$@"
+}
+
+case "${1:-}" in
+    list)
+        shift
+        if ! fetch_ids | grep -iE "${*:-.}"; then
+            echo "Kein Treffer oder Abfrage fehlgeschlagen." >&2
+            exit 1
+        fi
+        ;;
+    help|-h|--help)
+        cat <<'USAGE'
+cc-nim — Claude Code via NVIDIA NIM (OpenAI-Format -> ccr-Bridge)
+
+  cc-nim                Modelle listen + auswählen + Claude Code starten
+  cc-nim list [muster]  Liste anzeigen, optional mit grep-Muster filtern (z. B. 'llama').
+  cc-nim <modell>       Direkt starten (z. B. cc-nim meta/llama-3.3-70b-instruct)
+  cc-nim <modell> args  Claude-Argumente durchreichen (z. B. -p "Frage")
+
+Key: ~/.cc-providers/nim.key  |  Bridge: ccr auf http://127.0.0.1:3456
+USAGE
+        ;;
+    "")
+        pick_and_start
+        ;;
+    -*)
+        shift
+        pick_and_start "$@"
+        ;;
+    *)
+        start_claude "$@"
+        ;;
+esac

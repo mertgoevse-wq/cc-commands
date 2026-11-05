@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+# cc-blues — Claude Code über den BluesMinds-Gateway (bluesminds.com) starten.
+#
+#   cc-blues            -> Modelle auflisten, eines auswählen und Claude Code starten
+#   cc-blues list       -> verfügbare Modelle auflisten
+#   cc-blues <modell> [extra-claude-args...] -> Claude Code mit diesem Modell starten
+#   cc-blues help       -> Hilfe
+#
+# API-Key liegt global in ~/.bluesminds/api_key (überschreibbar via BLUESMINDS_KEY_FILE).
+
+set -u
+
+BASE_URL="https://api.bluesminds.com/"
+KEY_FILE="${BLUESMINDS_KEY_FILE:-$HOME/.bluesminds/api_key}"
+
+if [ ! -r "$KEY_FILE" ]; then
+    echo "Fehler: Kein BluesMinds-API-Key gefunden. Erwartet in: $KEY_FILE" >&2
+    exit 1
+fi
+KEY="$(tr -d '\r\n' < "$KEY_FILE")"
+
+fetch_models() {
+    curl -sS --max-time 30 "${BASE_URL}v1/models" -H "Authorization: Bearer $KEY"
+}
+
+parse_ids() {
+    # stdin: JSON-Antwort der /v1/models-Route; stdout: Modell-IDs in Reihenfolge
+    local payload
+    payload="$(cat)"
+    if printf '%s' "$payload" | grep -q '"error"'; then
+        printf '%s' "$payload" >&2
+        echo
+        return 1
+    fi
+    if command -v node >/dev/null 2>&1; then
+        printf '%s' "$payload" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{JSON.parse(s).data.forEach(m=>console.log(m.id))}catch(e){console.error("Unerwartete API-Antwort:",e.message)}})'
+    elif command -v jq >/dev/null 2>&1; then
+        printf '%s' "$payload" | jq -r '.data[].id'
+    else
+        printf '%s' "$payload" | sed -n 's/.*"data":\[//p' | grep -oE '"id":"[^"]+"' | sed -E 's/"id":"([^"]+)"/\1/'
+    fi
+}
+
+print_model_list() {
+    local raw
+    raw="$(fetch_models)" || { echo "Fehler: Abfrage der Modellliste fehlgeschlagen." >&2; return 1; }
+    mapfile -t MODELS < <(parse_ids <<-EOF
+$raw
+EOF
+    )
+    if [ "${#MODELS[@]}" -eq 0 ]; then
+        echo "Keine Modelle gefunden. Prüfe den API-Key in $KEY_FILE." >&2
+        return 1
+    fi
+    local i=1
+    printf '%-4s %s\n' "Nr." "Modell"
+    for m in "${MODELS[@]}"; do
+        printf '%-4d %s\n' "$i" "$m"
+        i=$((i + 1))
+    done
+    echo "(${#MODELS[@]} Modelle via BluesMinds)"
+    return 0
+}
+
+start_claude() {
+    local model="$1"; shift
+    export ANTHROPIC_BASE_URL="$BASE_URL"
+    export ANTHROPIC_API_URL="$BASE_URL"
+    export ANTHROPIC_API_KEY="$KEY"
+    unset ANTHROPIC_AUTH_TOKEN
+    echo "→ Starte Claude Code 2.x via BluesMinds mit Modell: $model"
+    exec claude --model "$model" "$@"
+}
+
+case "${1:-}" in
+    list)
+        print_model_list
+        ;;
+    help|-h|--help)
+        cat <<'USAGE'
+cc-blues — Claude Code via BluesMinds
+
+  cc-blues                Modelle auflisten + auswählen + Claude Code starten
+  cc-blues list           Nur die Modellliste anzeigen
+  cc-blues <modell>       Claude Code direkt mit einem Modell starten
+                          (z. B.:  cc-blues z-ai/glm4.7)
+  cc-blues <modell> args  Zusätzliche Claude-Argumente durchreichen
+                          (z. B.:  cc-blues z-ai/glm4.7 -p "kurze Frage")
+
+API-Key: ~/.bluesminds/api_key  |  Basis-URL: https://api.bluesminds.com/
+USAGE
+        ;;
+    "")
+        if ! print_model_list; then
+            exit 1
+        fi
+        printf 'Modell wählen (Nummer oder Modellname): '
+        read -r CHOICE
+        if [ -z "$CHOICE" ]; then
+            echo "Abgebrochen." >&2
+            exit 1
+        fi
+        if case "$CHOICE" in (*[!0-9]*|'') false;; esac && [ "$CHOICE" -ge 1 ] && [ "$CHOICE" -le "${#MODELS[@]}" ]; then
+            MODEL="${MODELS[$((CHOICE - 1))]}"
+        else
+            MODEL="$CHOICE"
+        fi
+        start_claude "$MODEL"
+        ;;
+    *)
+        start_claude "$@"
+        ;;
+esac
