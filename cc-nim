@@ -3,7 +3,7 @@
 # NIM ist OpenAI-Format; die Anthropic->OpenAI-Übersetzung übernimmt claude-code-router
 # (ccr) als lokale Bridge auf http://127.0.0.1:3456.
 #
-#   cc-nim                 Modelle listen + auswählen + starten
+#   cc-nim                 Modelle listen (mit Live-Status) + auswählen + starten
 #   cc-nim list [muster]   nur listen (Optional: grep-Muster, z. B. 'llama|qwen|kimi')
 #   cc-nim <modell> [claude-args...]
 #   cc-nim help
@@ -17,7 +17,49 @@ KEY="$(tr -d '\r\n' < "$KEY_FILE")"
 
 fetch_ids() {
     curl -sS --max-time 40 "$BASE/models" -H "Authorization: Bearer $KEY" \
-        | node "$HOME/bin/cc-json-ids.js"
+        | node "$HOME/bin/cc-json-ids.js" 2>/dev/null
+}
+
+probe_one() {   # exportiert, wird via xargs parallel aufgerufen; setzt KEY/BASE voraus
+    local m="$1" code body
+    body='{"model":"'"$m"'","messages":[{"role":"user","content":"hi"}],"max_tokens":1}'
+    code=$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' \
+        -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+        -X POST "$BASE/chat/completions" -d "$body" 2>/dev/null)
+    printf '%s\t%s\n' "$m" "$code"
+}
+
+status_mark() { # HTTP-Code -> Anzeige
+    case "$1" in
+        20*) echo "✓" ;;
+        429) echo "!" ;;          # Rate-Limit (Gratis-Tier): Modell da, gerade gedrosselt
+        401|403|404) echo "✗" ;;  # Key/Rechte/Modell fehlt
+        400) echo "?" ;;          # Anfrage-Regression/Sonderregeln — unsicher
+        5*)  echo "?" ;;          # Upstream-Störung
+        000|*) echo "?" ;;        # Timeout/sonstiges
+    esac
+}
+
+# show_models [muster] — lädt Modell-IDs (optional grep-gefiltert), probe je Modell
+# parallel und füllt MODELS[] + ST[] (assoziativ) sowie Liste mit OK-Spalte.
+show_models() {
+    local pattern="${1:-.}"
+    mapfile -t MODELS < <(fetch_ids | grep -iE "$pattern" || true)
+    [ "${#MODELS[@]}" -gt 0 ] || { echo "Keine Modelle von NIM erhalten — Key prüfen." >&2; return 1; }
+    export KEY BASE
+    export -f probe_one 2>/dev/null || true
+    declare -gA ST
+    while IFS=$'\t' read -r id code; do
+        ST["$id"]="$(status_mark "$code")"
+    done < <(printf '%s\n' "${MODELS[@]}" | xargs -d '\n' -P 10 -n1 bash -c 'probe_one "$0"' 2>/dev/null)
+    local i=1
+    printf '%-4s %-2s %s\n' "Nr." "OK" "Modell"
+    for m in "${MODELS[@]}"; do
+        printf '%-4d %-2s %s\n' "$i" "${ST[$m]:-?}" "$m"
+        i=$((i + 1))
+    done
+    echo "(✓ = jetzt erreichbar; ! = Rate-Limit; ✗ = nicht verfügbar; ? = unsicher, z. B. Timeout)"
+    return 0
 }
 
 ensure_gateway() {
@@ -25,6 +67,10 @@ ensure_gateway() {
         return 0
     fi
     echo "→ Starte lokale ccr-Bridge (Anthropic->OpenAI) auf Port 3456 ..." >&2
+    command -v ccr >/dev/null 2>&1 || {
+        echo "Fehler: ccr (claude-code-router) nicht gefunden. Install: npm i -g @musistudio/claude-code-router" >&2
+        return 1
+    }
     ccr start >/dev/null 2>&1 &
     local i
     for i in $(seq 1 20); do
@@ -51,32 +97,9 @@ start_claude() {
     exec claude --model "nvidia-nim,$model" "$@"
 }
 
-print_list() {
-    mapfile -t MODELS
-    if [ "${#MODELS[@]}" -eq 0 ]; then
-        echo "Keine Modelle von NIM erhalten — Key prüfen." >&2
-        return 1
-    fi
-    local i=1
-    for m in "${MODELS[@]}"; do
-        printf '%-4d %s\n' "$i" "$m"
-        i=$((i + 1))
-    done
-    echo "(${#MODELS[@]} NIM-Modelle; alle im Gratis-Trial-Tier; tool-calling-Eignung beachten)"
-}
-
 pick_and_start() {
-    mapfile -t MODELS < <(fetch_ids)
-    if [ "${#MODELS[@]}" -eq 0 ]; then
-        echo "Keine Modelle von NIM erhalten — Key prüfen." >&2
-        exit 1
-    fi
-    local i=1
-    for m in "${MODELS[@]}"; do
-        printf '%-4d %s\n' "$i" "$m"
-        i=$((i + 1))
-    done
-    echo "(${#MODELS[@]} NIM-Modelle; alle im Gratis-Trial-Tier)"
+    show_models || exit 1
+    echo "(${#MODELS[@]} NIM-Modelle; Status = Live-Probe mit 1 Mini-Request)"
     printf 'Modell wählen (Nummer oder Name): '
     read -r CHOICE
     [ -n "$CHOICE" ] || { echo "Abgebrochen." >&2; exit 1; }
@@ -91,21 +114,24 @@ pick_and_start() {
 case "${1:-}" in
     list)
         shift
-        if ! fetch_ids | grep -iE "${*:-.}"; then
-            echo "Kein Treffer oder Abfrage fehlgeschlagen." >&2
-            exit 1
-        fi
+        show_models "${*:-.}" || exit 1
         ;;
     help|-h|--help)
         cat <<'USAGE'
 cc-nim — Claude Code via NVIDIA NIM (OpenAI-Format -> ccr-Bridge)
 
-  cc-nim                Modelle listen + auswählen + Claude Code starten
-  cc-nim list [muster]  Liste anzeigen, optional mit grep-Muster filtern (z. B. 'llama').
+  cc-nim                Modelle listen (mit Live-Status) + auswählen + starten
+  cc-nim list [muster]  Liste anzeigen, optional mit grep-Muster (z. B. 'llama').
   cc-nim <modell>       Direkt starten (z. B. cc-nim meta/llama-3.3-70b-instruct)
   cc-nim <modell> args  Claude-Argumente durchreichen (z. B. -p "Frage")
 
-Key: ~/.cc-providers/nim.key  |  Bridge: ccr auf http://127.0.0.1:3456
+Key:     ~/.cc-providers/nim.key
+Bridge:  ccr (claude-code-router) auf http://127.0.0.1:3456 — wird von cc-nim
+         automatisch gestartet, falls nötig. Manuell:  ccr start
+         (Install falls fehlend: npm i -g @musistudio/claude-code-router)
+
+Statusspalte: ✓ erreichbar | ! Rate-Limit | ✗ nicht verfügbar | ? unsicher
+(Probe = 1 Mini-Request pro Modell, parallel)
 USAGE
         ;;
     "")

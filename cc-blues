@@ -41,6 +41,26 @@ parse_ids() {
     fi
 }
 
+probe_one() {   # exportiert, wird via xargs parallel aufgerufen; setzt KEY/BASE_URL voraus
+    local m="$1" code body
+    body='{"model":"'"$m"'","messages":[{"role":"user","content":"hi"}],"max_tokens":1}'
+    code=$(curl -sS --max-time 12 -o /dev/null -w '%{http_code}' \
+        -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+        -X POST "${BASE_URL}v1/chat/completions" -d "$body" 2>/dev/null)
+    printf '%s\t%s\n' "$m" "$code"
+}
+
+status_mark() { # HTTP-Code -> Anzeige
+    case "$1" in
+        20*) echo "✓" ;;
+        429) echo "!" ;;          # Rate-Limit: Modell existiert, gerade gedrosselt
+        401|403|404) echo "✗" ;; # Key/Rechte/Modell fehlt
+        400) echo "?" ;;         # Anfrage-Regression (z. B. Sonderregeln) - unsicher
+        5*) echo "?" ;;          # Upstream-Störung
+        *)   echo "?" ;;         # Timeout/sonstiges
+    esac
+}
+
 print_model_list() {
     local raw
     raw="$(fetch_models)" || { echo "Fehler: Abfrage der Modellliste fehlgeschlagen." >&2; return 1; }
@@ -53,12 +73,21 @@ EOF
         return 1
     fi
     local i=1
-    printf '%-4s %s\n' "Nr." "Modell"
+    # Live-Verfügbarkeit: je Modell 1 Mini-Request, parallel (6 gleichzeitig)
+    export KEY BASE_URL
+    export -f probe_one 2>/dev/null || true
+    declare -A ST
+    while IFS=$'\t' read -r id code; do
+        local mark; mark="$(status_mark "$code")"
+        ST["$id"]="$mark"
+    done < <(printf '%s\n' "${MODELS[@]}" | xargs -d '\n' -P 6 -n1 bash -c 'probe_one "$0"' 2>/dev/null)
+    printf '%-4s %-2s %s\n' "Nr." "OK" "Modell"
     for m in "${MODELS[@]}"; do
-        printf '%-4d %s\n' "$i" "$m"
+        printf '%-4d %-2s %s\n' "$i" "${ST[$m]:-?}" "$m"
         i=$((i + 1))
     done
-    echo "(${#MODELS[@]} Modelle via BluesMinds)"
+    echo "(${#MODELS[@]} Modelle via BluesMinds; Live-Probe je Modell)"
+    echo "(✓ = jetzt erreichbar; ! = Rate-Limit; ✗ = nicht verfügbar; ? = unsicher, z. B. Timeout)"
     return 0
 }
 

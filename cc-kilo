@@ -35,14 +35,19 @@ print_models() {
         free)   url="$MODELS_URL?isFree=true" ;;
         all|*)  url="$MODELS_URL" ;;
     esac
-    curl -sS --max-time 30 "$url" | node -e '
+    # Verfügbarkeit: autoRouting-Modelle (kilo-auto/*) routen dynamisch und sind
+    # immer erreichbar; sonst zählen die inference_provider_ids (aktive Backends).
+    curl -sS --max-time 40 "$url" | node -e '
 let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{
  try{
   const j=JSON.parse(s); const arr=j.data||[];
   for(const m of arr){
+    const backends=(m.inference_provider_ids||[]).length;
+    const ok=(m.autoRouting||backends>0)?"✓":"✗";
     const free=(m.isFree||m.id.endsWith(":free")||String(m.id).startsWith("kilo-auto/free"))?"[FREE]":"      ";
-    console.log((free+" "+m.id).trim());
+    console.log((ok+" "+free+" "+m.id).trim());
   }
+  console.log("(# ✓ = mit Backend verfügbar; ✗ = momentan kein Backend; [FREE] = gratis)");
  }catch(e){console.error("Kein gültiges Modell-JSON");process.exit(3)}
 });'
 }

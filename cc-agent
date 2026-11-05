@@ -3,7 +3,7 @@
 # AgentRouter bietet eine Anthropic-kompatible Route; Modelle sind dynamisch.
 # Live-Modelliste: https://agentrouter.org/console/personal
 #
-#   cc-agent               Modellauswahl (Doku-Fallback, s. u.) + starten
+#   cc-agent               Modellauswahl (mit Live-Status) + starten
 #   cc-agent list          Modellliste anzeigen (Live-Fetch; Fallback: bekannte Modelle)
 #   cc-agent <modell> [claude-args...]
 
@@ -14,7 +14,7 @@ KEY_FILE="${AGENTROUTER_KEY_FILE:-$HOME/.cc-providers/agentrouter.key}"
 [ -r "$KEY_FILE" ] || { echo "Fehler: Kein AgentRouter-Key in $KEY_FILE" >&2; exit 1; }
 KEY="$(tr -d '\r\n' < "$KEY_FILE")"
 
-# Bekannte Anthropic-Route-Modelle (Dokumentation/Quickstart, dynamisch atualisiert)
+# Bekannte Anthropic-Route-Modelle (Dokumentation/Quickstart)
 DECLARED_MODELS=(
     "claude-opus-4-8"
     "claude-opus-4-7"
@@ -23,6 +23,41 @@ DECLARED_MODELS=(
     "claude-sonnet-4-5-20250929"
     "claude-haiku-4-5-20251001"
 )
+
+# Wichtig: AgentRouter verlangt den echten Claude-Code-Client und antwortet auf
+# Fremd-Clients mit 401 ("unauthorized client detected"). Eine Live-Verfügbarkeits-
+# probe per curl ist daher NICHT möglich — die Liste bleibt unverifiziert.
+plain_list() {
+    local ref="$1[@]"
+    local arr=("${!ref}")
+    local i=1
+    printf '%-4s %s\n' "Nr." "Modell"
+    for m in "${arr[@]}"; do
+        printf '%-4d %s\n' "$i" "$m"
+        i=$((i + 1))
+    done
+}
+
+# load_models [ergebnis-Array-Name] — Live-Fetch (nur claude*), Fallback auf Doku-Liste
+load_models() {  # füllt globales MODELS[]; LIVE=1 bei Live-Fetch, sonst Doku-Fallback
+    local live
+    live=$(curl -sS --max-time 20 "$BASE/v1/models" -H "Authorization: Bearer $KEY" \
+        | node "$HOME/bin/cc-json-ids.js" 2>/dev/null | grep -i claude || true)
+    if [ -n "$live" ]; then
+        mapfile -t MODELS <<<"$live"
+        LIVE=1
+    else
+        echo "(Live-Fetch blockiert — nutze Doku-Liste; Verfügbarkeit je Modell live geprüft.)" >&2
+        MODELS=("${DECLARED_MODELS[@]}")
+        LIVE=0
+    fi
+}
+
+# show_models [array] — ohne Probe (AgentRouter blockt Fremd-Clients)
+status_list() {
+    plain_list "$1"
+    echo "(Ohne Live-Status: AgentRouter erlaubt Probes nur dem echten Claude-Client.)"
+}
 
 start_claude() {
     local model="$1"; shift
@@ -36,39 +71,31 @@ start_claude() {
 
 case "${1:-}" in
     list)
-        echo "Versuche Live-Fetch der Modellliste (/v1/models) ..."
-        LIVE=$(curl -sS --max-time 20 "$BASE/v1/models" -H "Authorization: Bearer $KEY" | node "$HOME/bin/cc-json-ids.js" 2>/dev/null)
-        if [ -n "$LIVE" ]; then
-            echo "$LIVE" | grep -i claude | nl -ba
-            echo "(Live-Anthropic-Modelle; die vollständige Liste liegt in der AgentRouter-Konsole)"
-        else
-            echo "Live-Fetch blockiert (AgentRouter verlangt den echten Claude-Code-Client)."
-            echo "Verfügbare Modelle laut Doku / Konsole (https://agentrouter.org/console/personal):"
-            printf '  %s\n' "${DECLARED_MODELS[@]}"
-        fi
+        load_models MODELS
+        status_list MODELS
         ;;
     help|-h|--help)
         cat <<'USAGE'
 cc-agent — Claude Code via AgentRouter (Anthropic-kompatibel)
 
-  cc-agent              Modelle aus der Konsoe-Liste wählen + starten
-  cc-agent list         Modellliste anzeigen
+  cc-agent              Modelle mit Live-Status wählen + starten
+  cc-agent list         Modellliste (Live-Fetch; AgentRouter erlaubt keine curl-Probe)
   cc-agent <modell>     Direkt starten (z. B. cc-agent claude-opus-4-8)
   cc-agent <modell> args  Claude-Argumente durchreichen
 
-Key: ~/.cc-providers/agentrouter.key  |  Basis: https://agentrouter.org (ohne /v1)
+Key: ~/.cc-providers/agentrouter.key  |  Basis: https://agentrouter.org
 USAGE
         ;;
     "")
-        local_count=${#DECLARED_MODELS[@]}
-        i=1
-        for m in "${DECLARED_MODELS[@]}"; do printf '%-4d %s\n' "$i" "$m"; i=$((i+1)); done
-        echo "(Feste Doku-Liste; Live-Liste in der Konsole: agentrouter.org/console/personal)"
+        load_models MODELS
+        status_list MODELS
+        echo "(vollständige Liste in der Konsole: agentrouter.org/console/personal)"
         printf 'Modell wählen (Nummer oder Name): '
         read -r CHOICE
         [ -n "$CHOICE" ] || { echo "Abgebrochen." >&2; exit 1; }
+        local_count=${#MODELS[@]}
         if case "$CHOICE" in (*[!0-9]*|'') false;; esac && [ "$CHOICE" -ge 1 ] && [ "$CHOICE" -le "$local_count" ]; then
-            MODEL="${DECLARED_MODELS[$((CHOICE - 1))]}"
+            MODEL="${MODELS[$((CHOICE - 1))]}"
         else
             MODEL="$CHOICE"
         fi

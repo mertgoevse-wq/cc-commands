@@ -4,7 +4,8 @@ SUBCMDS="exec review login logout mcp plugin app-server remote-control app compl
 MODEL="${1:-auto}"
 case " $SUBCMDS " in *" $MODEL "*) MODEL="auto";; esac
 if [ "$MODEL" != "auto" ]; then shift; fi
-[ "$MODEL" = "auto" ] && MODEL="omniroute/auto"
+# Default: omniroute/auto braucht Cloud-Creds; auto/best-free läuft lokal am Router
+[ "$MODEL" = "auto" ] || [ "$MODEL" = "omniroute/auto" ] && MODEL="auto/best-free"
 PROVIDER="omniroute"
 if [ -n "$1" ] && ! echo " $SUBCMDS " | grep -q " $1 "; then
   case "$1" in -*) ;; *) PROVIDER="$1"; shift;; esac
